@@ -23,3 +23,6 @@ venv/
 # Large model/cache artifacts should stay outside the repo
 .cache/
 models/
+
+# Local literature PDFs can be large and publisher-licensed.
+literature/pdfs/
