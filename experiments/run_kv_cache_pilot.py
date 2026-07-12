@@ -276,7 +276,15 @@ def parse_args() -> argparse.Namespace:
         help="Add a UCKV variant that abstains to full cache outside calibration lengths.",
     )
     parser.add_argument("--free-run-eval", action="store_true")
-    parser.add_argument("--free-run-policies", default="full,uckv_budget")
+    parser.add_argument(
+        "--free-run-policies",
+        default="full,uckv_budget",
+        help=(
+            "Comma-separated policies. h2o_matched_B reuses the UCKV-2 recent "
+            "window, probe layers, and eviction cadence for a controlled utility "
+            "comparison; h2o_hh_B retains the legacy H2O-style contract."
+        ),
+    )
     parser.add_argument(
         "--progress-every",
         type=int,
@@ -567,10 +575,12 @@ def select_score_heavy_hitter_indices(
     sink: int,
     budget: int,
     current_abs_pos: int,
+    min_recent: int = 1,
+    recent_fraction: float = 0.5,
 ) -> List[int]:
     if len(positions) <= budget:
         return list(range(len(positions)))
-    recent_window = max(1, budget // 2)
+    recent_window = max(1, min_recent, int(round(budget * recent_fraction)))
     recent_start = max(0, current_abs_pos - recent_window)
     mandatory = {
         idx for idx, pos in enumerate(positions) if pos < sink or pos >= recent_start
@@ -597,24 +607,15 @@ def select_uckv2_heavy_hitter_indices(
     min_recent: int,
     recent_fraction: float,
 ) -> List[int]:
-    if len(positions) <= budget:
-        return list(range(len(positions)))
-    recent_window = max(1, min_recent, int(round(budget * recent_fraction)))
-    recent_start = max(0, current_abs_pos - recent_window)
-    mandatory = {
-        idx for idx, pos in enumerate(positions) if pos < sink or pos >= recent_start
-    }
-    if len(mandatory) >= budget:
-        return sorted(mandatory, key=lambda idx: positions[idx])[-budget:]
-    selectable = scores.detach().float().clone()
-    if mandatory:
-        mandatory_idx = torch.tensor(
-            sorted(mandatory), dtype=torch.long, device=selectable.device
-        )
-        selectable.index_fill_(0, mandatory_idx, float("-inf"))
-    heavy_count = min(budget - len(mandatory), len(positions) - len(mandatory))
-    heavy = torch.topk(selectable, k=heavy_count, largest=True).indices.tolist()
-    return sorted(mandatory.union(int(idx) for idx in heavy))
+    return select_score_heavy_hitter_indices(
+        scores,
+        positions,
+        sink,
+        budget,
+        current_abs_pos,
+        min_recent=min_recent,
+        recent_fraction=recent_fraction,
+    )
 
 
 def selected_attention_layers(
@@ -1216,6 +1217,11 @@ def free_run_h2o_generation(
     budget: int,
     max_new_tokens: int,
     sink: int = 4,
+    evict_every: int = 1,
+    recent_fraction: float = 0.5,
+    min_recent: int = 1,
+    probe_layers: Sequence[int] = (),
+    policy_label: Optional[str] = None,
 ) -> Dict[str, Any]:
     encoded = tokenizer(example.text, return_tensors="pt", add_special_tokens=False)
     input_ids = encoded["input_ids"].to(device)
@@ -1234,7 +1240,9 @@ def free_run_h2o_generation(
     scores = torch.zeros(prompt_len, dtype=torch.float32, device=device)
     generated: List[int] = []
     kept_counts: List[int] = []
+    budget_overruns: List[int] = []
     cache_bytes: List[int] = []
+    eviction_count = 0
     peak_cache_bytes = cache_nbytes(past)
     can_set_attention = hasattr(model, "set_attn_implementation")
     original_implementation = str(getattr(model.config, "_attn_implementation", ""))
@@ -1262,7 +1270,10 @@ def free_run_h2o_generation(
             )
             if output.attentions is None:
                 raise RuntimeError("Eager attention did not return attention weights.")
-            step_scores = aggregate_attention_scores(output.attentions).to(scores.device)
+            step_scores = aggregate_attention_scores(
+                output.attentions,
+                probe_layers=probe_layers,
+            ).to(scores.device)
             if len(step_scores) != len(positions) + 1:
                 raise RuntimeError(
                     "Attention/cache length mismatch in H2O-style baseline: "
@@ -1275,18 +1286,24 @@ def free_run_h2o_generation(
             generated.append(next_token)
             peak_cache_bytes = max(peak_cache_bytes, cache_nbytes(past))
 
-            keep = select_score_heavy_hitter_indices(
-                scores,
-                positions,
-                sink=sink,
-                budget=budget,
-                current_abs_pos=abs_pos,
-            )
-            past = slice_past(past, keep)
-            positions = [positions[index] for index in keep]
-            keep_tensor = torch.tensor(keep, dtype=torch.long, device=scores.device)
-            scores = scores.index_select(0, keep_tensor)
+            should_evict = step == 0 or (step + 1) % evict_every == 0
+            if should_evict:
+                keep = select_score_heavy_hitter_indices(
+                    scores,
+                    positions,
+                    sink=sink,
+                    budget=budget,
+                    current_abs_pos=abs_pos,
+                    min_recent=min_recent,
+                    recent_fraction=recent_fraction,
+                )
+                past = slice_past(past, keep)
+                positions = [positions[index] for index in keep]
+                keep_tensor = torch.tensor(keep, dtype=torch.long, device=scores.device)
+                scores = scores.index_select(0, keep_tensor)
+                eviction_count += 1
             kept_counts.append(len(positions))
+            budget_overruns.append(max(0, len(positions) - budget))
             cache_bytes.append(cache_nbytes(past))
     finally:
         if can_set_attention:
@@ -1305,7 +1322,7 @@ def free_run_h2o_generation(
         "task_type": example.task_type,
         "answer_position": example.answer_position,
         "context_words": example.context_words,
-        "policy": f"h2o_hh_{budget}",
+        "policy": policy_label or f"h2o_hh_{budget}",
         "expected_answer": example.answer,
         "answer_contains": int(answer_in_text(example.answer, generated_text)),
         "generated_tokens": len(generated),
@@ -1321,6 +1338,9 @@ def free_run_h2o_generation(
         "cuda_peak_allocated_bytes": cuda_peak_bytes,
         "cuda_peak_delta_bytes": max(0, cuda_peak_bytes - cuda_baseline_bytes),
         "avg_kept_tokens": float(np.mean(kept_counts)) if kept_counts else np.nan,
+        "max_kept_tokens": max(kept_counts) if kept_counts else np.nan,
+        "budget_overrun_steps": sum(value > 0 for value in budget_overruns),
+        "max_budget_overrun": max(budget_overruns) if budget_overruns else 0,
         "avg_selected_window": float(budget),
         "avg_selected_risk": np.nan,
         "fallback_steps": 0,
@@ -1331,11 +1351,11 @@ def free_run_h2o_generation(
         "topk_elapsed_s": np.nan,
         "slice_elapsed_s": np.nan,
         "selector_decode_fraction": np.nan,
-        "eviction_count": len(generated),
-        "evict_every": 1,
+        "eviction_count": eviction_count,
+        "evict_every": evict_every,
         "ug_h2o_lambda": np.nan,
         "ug_h2o_beta": np.nan,
-        "probe_layers": "",
+        "probe_layers": ",".join(str(index) for index in probe_layers),
         "avg_entropy_gate": np.nan,
     }
 
@@ -1384,6 +1404,7 @@ def free_run_uckv2_fixed_generation(
         scores = torch.zeros(prompt_len, dtype=torch.float32, device=device)
         generated: List[int] = []
         kept_counts: List[int] = []
+        budget_overruns: List[int] = []
         cache_bytes: List[int] = []
         gate_values: List[float] = []
         peak_cache_bytes = cache_nbytes(past)
@@ -1475,6 +1496,7 @@ def free_run_uckv2_fixed_generation(
                 eviction_count += 1
 
             kept_counts.append(len(positions))
+            budget_overruns.append(max(0, len(positions) - budget))
             cache_bytes.append(cache_nbytes(past))
 
         synchronize_device(device)
@@ -1516,6 +1538,9 @@ def free_run_uckv2_fixed_generation(
         "cuda_peak_allocated_bytes": cuda_peak_bytes,
         "cuda_peak_delta_bytes": max(0, cuda_peak_bytes - cuda_baseline_bytes),
         "avg_kept_tokens": float(np.mean(kept_counts)) if kept_counts else np.nan,
+        "max_kept_tokens": max(kept_counts) if kept_counts else np.nan,
+        "budget_overrun_steps": sum(value > 0 for value in budget_overruns),
+        "max_budget_overrun": max(budget_overruns) if budget_overruns else 0,
         "avg_selected_window": float(budget),
         "avg_selected_risk": np.nan,
         "fallback_steps": 0,
@@ -1559,6 +1584,22 @@ def free_run_generation(
             budget=int(h2o_match.group(1)),
             max_new_tokens=max_new_tokens,
             sink=4,
+        )
+    h2o_matched = re.fullmatch(r"h2o_matched_(\d+)", policy_name)
+    if h2o_matched:
+        return free_run_h2o_generation(
+            model,
+            tokenizer,
+            device,
+            example,
+            budget=int(h2o_matched.group(1)),
+            max_new_tokens=max_new_tokens,
+            sink=4,
+            evict_every=uckv2_config.evict_every,
+            recent_fraction=uckv2_config.recent_fraction,
+            min_recent=uckv2_config.min_recent,
+            probe_layers=uckv2_config.probe_layers,
+            policy_label=policy_name,
         )
     uckv2_match = re.fullmatch(r"(?:uckv2_fixed|ugh2o_hh)_(\d+)", policy_name)
     if uckv2_match:
@@ -1688,6 +1729,9 @@ def free_run_generation(
         "cuda_peak_allocated_bytes": cuda_peak_bytes,
         "cuda_peak_delta_bytes": max(0, cuda_peak_bytes - cuda_baseline_bytes),
         "avg_kept_tokens": float(np.mean(kept_counts)) if kept_counts else np.nan,
+        "max_kept_tokens": max(kept_counts) if kept_counts else np.nan,
+        "budget_overrun_steps": np.nan,
+        "max_budget_overrun": np.nan,
         "avg_selected_window": float(np.mean(selected_windows)) if selected_windows else np.nan,
         "avg_selected_risk": safe_nanmean(selected_risks),
         "fallback_steps": sum(1 for value in selections if value == "fallback_max_budget"),
@@ -2012,6 +2056,9 @@ def main() -> None:
                     prompts=("prompt_id", "count"),
                     answer_contains=("answer_contains", "mean"),
                     avg_kept_tokens=("avg_kept_tokens", "mean"),
+                    max_kept_tokens=("max_kept_tokens", "max"),
+                    budget_overrun_steps=("budget_overrun_steps", "sum"),
+                    max_budget_overrun=("max_budget_overrun", "max"),
                     fallback_steps=("fallback_steps", "sum"),
                     abstain_steps=("abstain_steps", "sum"),
                     avg_prefill_s=("prefill_elapsed_s", "mean"),

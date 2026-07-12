@@ -17,17 +17,25 @@ a small-model signal but did not transfer reliably to a 7B setting. The next
 research step is to redesign uncertainty as a calibrated budget/risk controller
 over strong KV-cache backbones rather than as the main token-ranking signal.
 
+An external-review audit on 2026-07-12 further narrowed that direction. Adaptive
+or uncertainty-aware budget control is already covered by several recent works,
+so the remaining constructive hypothesis is finite-sample audited risk control
+over a fixed strong backbone, with explicit coverage, abstention, and shift
+evaluation. This is a hypothesis under test, not a current novelty claim.
+
 ## Contents
 
 - `main.tex`: top-level LaTeX document.
 - `sections/`: manuscript sections.
 - `references.bib`: bibliography.
 - `experiments/run_kv_cache_pilot.py`: core KV-cache compression pilot runner.
+- `experiments/test_kv_cache_selection.py`: selection-contract and hard-budget tests.
 - `experiments/generate_synthetic_benchmark.py`: controlled retrieval prompt generator.
 - `experiments/analyze_*.py`: aggregation and plotting scripts.
 - `experiments/prompts/`: deterministic synthetic prompt sets.
 - `figures/`: manuscript figures.
 - `outputs/analysis_*`: public aggregate summaries and plots.
+- `notes/research_status_2026-07-12.md`: current evidence, corrections, and decision gates.
 
 ## Build
 
@@ -48,6 +56,12 @@ make pdf-latexmk
 The public repository is designed for local or self-managed experiments. Any
 large-model or remote-hardware runs should be adapted to the user's own compute
 environment. Private infrastructure automation has been deliberately excluded.
+
+For controlled score comparisons, `h2o_matched_B` reuses the same recent-token
+rule, probe layers, and eviction cadence configured for UCKV2. Free-run outputs
+now record maximum retained tokens and budget-overrun diagnostics. Historical
+results produced before this repair remain labeled as nominal-budget rather
+than strictly matched-memory comparisons.
 
 ## Citation
 
