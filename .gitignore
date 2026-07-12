@@ -1,0 +1,25 @@
+.DS_Store
+.ruff_cache/
+__pycache__/
+*.py[cod]
+screenlog.*
+
+# LaTeX intermediates
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+
+# Local environments and secrets
+.env
+.env.*
+.venv/
+venv/
+
+# Large model/cache artifacts should stay outside the repo
+.cache/
+models/

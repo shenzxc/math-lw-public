@@ -1,0 +1,77 @@
+\section{Method}
+
+\subsection{Overview}
+
+\uckv{} has two phases. In the calibration phase, a held-out set is decoded with full KV cache and with several candidate compression budgets. This produces supervision for both ordinary answer uncertainty and compression-induced degradation. In the deployment phase, \uckv{} uses the learned calibrators to allocate cache budgets and choose retained tokens.
+
+\subsection{Uncertainty features}
+
+For each decoding step $t$, let $p_t$ be the next-token distribution. A lightweight feature vector can include:
+\[
+\psi_t =
+\left[
+H(p_t),\,
+1-\max_y p_t(y),\,
+p_t^{(1)}-p_t^{(2)},\,
+-\log p_t(y_t),\,
+t,\,
+\mathrm{len}(x)
+\right],
+\]
+where $H(p_t)$ is predictive entropy, $p_t^{(1)}$ and $p_t^{(2)}$ are the top two token probabilities, and $-\log p_t(y_t)$ is available during teacher-forced calibration. For open-ended QA, a higher-cost optional feature is semantic uncertainty from multiple sampled answers \citep{farquhar2024detecting}. Since semantic uncertainty multiplies inference cost, the initial implementation should begin with token-level features and only add semantic features for analysis.
+
+A calibrator $c_{\theta}$ maps $\psi_t$ to a calibrated error probability
+\[
+\hat{u}_t = c_{\theta}(\psi_t) \in [0,1].
+\]
+Possible calibrators include temperature scaling, isotonic regression, Platt scaling, or a small logistic model. Calibration quality should be reported with expected calibration error (ECE), Brier score, negative log-likelihood, and reliability diagrams.
+
+\subsection{Compression-risk calibration}
+
+Calibration data should include candidate cache budgets $b \in \calB$ and observed degradation labels:
+\[
+z_{t,b} = \mathbf{1}\{D_{t,b} > \delta\}.
+\]
+The compression-risk model estimates
+\[
+g_{\phi}(s_t,b) = \Prob(z_{t,b}=1 \mid s_t,b),
+\]
+where $s_t$ concatenates calibrated uncertainty $\hat{u}_t$, attention concentration statistics, omitted-mass estimates from candidate selection, context length, generation step, and budget. The risk model can be implemented as logistic regression for interpretability in the first version. If calibration is poor, the model should be post-calibrated with isotonic regression or conformalized on a split calibration set.
+
+\subsection{Risk-aware budget allocation}
+
+Let $\calB = \{B_1 < B_2 < \cdots < B_m\}$ be the allowed cache sizes. At step $t$, \uckv{} selects
+\[
+B_t^\star = \min \{B_j \in \calB : g_{\phi}(s_t,B_j) \le \epsilon\}.
+\]
+The tolerance $\epsilon$ controls a memory-reliability tradeoff. Smaller $\epsilon$ keeps more cache and should reduce compression risk. Larger $\epsilon$ allows more aggressive compression. A system-level scheduler can additionally enforce a global memory cap by adjusting $\epsilon$ or by using a dual variable that penalizes budget use.
+
+\subsection{Token utility}
+
+\uckv{} scores each cache entry with a combination of attention importance, uncertainty-weighted importance, recency, and protected positions. For token $i$ at step $t$:
+\[
+r_{i,t}^{\ell,h}
+= \gamma r_{i,t-1}^{\ell,h}
++ a_{t,i}^{\ell,h} (1+\eta \hat{u}_t),
+\]
+where $\gamma \in [0,1]$ discounts old attention evidence and $\eta \ge 0$ increases the value of tokens attended to during uncertain steps. The final utility is
+\[
+U_{i,t}^{\ell,h}
+= r_{i,t}^{\ell,h}
++ \lambda_{\mathrm{recent}}\mathbf{1}\{t-i < R\}
++ \lambda_{\mathrm{sink}}\mathbf{1}\{i \le S\}
++ \lambda_{\mathrm{ctx}}\hat{u}_{i}^{\mathrm{ctx}}.
+\]
+Here $R$ is a recent-token window, $S$ is the number of protected initial sink tokens, and $\hat{u}_{i}^{\mathrm{ctx}}$ is an optional calibrated uncertainty estimate from prefill. The retained set $\calS_t^{\ell,h}$ contains protected sink/recent tokens plus the highest-utility remaining tokens up to budget $B_t^\star$.
+
+\subsection{Design variants}
+
+The first experiments should compare three variants:
+
+\begin{enumerate}[leftmargin=*]
+    \item \textbf{\uckv{}-Budget}: uses uncertainty only to choose $B_t^\star$, while token scores follow an existing baseline such as H2O-style attention accumulation.
+    \item \textbf{\uckv{}-Score}: uses a fixed budget but uncertainty-weighted token utility.
+    \item \textbf{\uckv{}-Full}: combines risk-aware budget selection and uncertainty-weighted token utility.
+\end{enumerate}
+
+This separation is important because it tests whether gains come from adaptive memory size, better token selection, or both.

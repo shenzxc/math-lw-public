@@ -1,0 +1,32 @@
+\section{Algorithm}
+
+\begin{algorithm}[t]
+\caption{Uncertainty-Calibrated KV Cache Compression (\uckv{})}
+\label{alg:uckv}
+\begin{algorithmic}[1]
+\Require Model $f$, candidate budgets $\calB$, risk tolerance $\epsilon$, uncertainty calibrator $c_{\theta}$, compression-risk calibrator $g_{\phi}$, sink size $S$, recent window $R$, decay $\gamma$, uncertainty weight $\eta$
+\State Initialize KV cache with the prompt prefill
+\State Initialize token importance scores $r_{i,0}^{\ell,h}\gets 0$
+\For{decoding step $t=1,2,\ldots$}
+    \State Compute next-token logits and probability distribution $p_t$
+    \State Compute uncertainty features $\psi_t$ and calibrated uncertainty $\hat{u}_t \gets c_{\theta}(\psi_t)$
+    \For{each layer $\ell$ and head $h$}
+        \State Estimate or observe attention weights $a_{t,i}^{\ell,h}$ over currently retained entries
+        \State Update importance scores $r_{i,t}^{\ell,h}\gets \gamma r_{i,t-1}^{\ell,h}+a_{t,i}^{\ell,h}(1+\eta\hat{u}_t)$
+        \For{each candidate budget $b\in\calB$}
+            \State Build candidate retained set $\calS_{t,b}^{\ell,h}$ from sink tokens, recent tokens, and top utility scores
+            \State Construct features $s_{t,b}^{\ell,h}$ including $\hat{u}_t$, attention concentration, context length, and budget $b$
+            \State Estimate compression risk $\hat{r}_{t,b}^{\ell,h}\gets g_{\phi}(s_{t,b}^{\ell,h},b)$
+        \EndFor
+        \State Select $B_{t}^{\ell,h}\gets \min\{b\in\calB: \hat{r}_{t,b}^{\ell,h}\le \epsilon\}$
+        \If{no candidate budget satisfies the tolerance}
+            \State Set $B_t^{\ell,h}$ to the conservative maximum budget in $\calB$
+        \EndIf
+        \State Retain $\calS_t^{\ell,h}$ under budget $B_t^{\ell,h}$; evict non-retained entries from this layer-head cache
+    \EndFor
+    \State Sample or decode the next token and append its KV entries to the cache
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+The algorithm is written at layer-head granularity. A lower-overhead implementation may share retained sets across heads, update importance scores every $k$ decoding steps, or perform prompt compression once after prefill and online compression only during generation. These engineering choices should be treated as ablations because they affect both quality and throughput.

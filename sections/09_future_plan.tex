@@ -1,0 +1,12 @@
+\section{Follow-up Experimental Plan}
+
+\begin{enumerate}[leftmargin=*]
+    \item \textbf{Selector revision.} Replace the hard-threshold minimum-budget selector with a risk-memory objective, for example $\arg\min_b g_{\phi}(s_t,b)+\lambda M(b)$ or a fallback-penalized rule. The immediate target is to preserve the tolerance 0.36 task quality while reducing retained tokens and fallback frequency.
+    \item \textbf{Position-aware diagnostics.} Add per-position calibration features or separate calibrators for early, middle, and late retrieval. The current pilot shows that early-position evidence is the first to fail when tolerance increases.
+    \item \textbf{Calibration dataset.} Expand the held-out calibration split from the current controlled retrieval prompts to a larger mixture of synthetic retrieval, short QA, long-context QA, and summarization prompts. Continue reporting full-cache task quality before compression comparisons.
+    \item \textbf{Deployable features.} Separate offline oracle features from deployable features. The current replay features are useful for pilot analysis, but a serving system should rely on features available during compressed generation.
+    \item \textbf{Main benchmark run.} Compare full KV, sliding window, sink-plus-window, H2O-like retention, and \uckv{} variants on one 7B-class model across LongBench and RULER.
+    \item \textbf{Reliability run.} Evaluate TruthfulQA, TriviaQA, Natural Questions, and MMLU subsets with calibration metrics and risk-coverage curves.
+    \item \textbf{Scaling and systems run.} Repeat selected experiments on larger models or larger batch sizes, measuring peak memory, decode throughput, latency, and the overhead of risk prediction and cache slicing.
+    \item \textbf{Paper revision.} Add statistical uncertainty, include failure-case examples, and revise claims to match observed evidence.
+\end{enumerate}

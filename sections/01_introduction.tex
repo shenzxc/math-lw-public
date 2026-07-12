@@ -1,0 +1,25 @@
+\section{Introduction}
+
+Large language models (LLMs) are commonly served with autoregressive decoding. At each generation step, the model stores key and value activations from previous tokens so that later tokens can attend to them without recomputing the full prefix. This KV cache is one of the main practical reasons modern decoder-only Transformers can generate text efficiently. It is also a major memory bottleneck: cache size scales linearly with the number of processed tokens and with the number of concurrently served requests. As context windows and batch sizes grow, KV cache memory can dominate serving capacity, reduce throughput, and force systems to trade off latency, maximum context length, and the number of active users.
+
+Recent work addresses this bottleneck through cache eviction, streaming attention, adaptive retention, and low-bit KV quantization. These methods exploit several empirical regularities: only a subset of tokens may receive most of the attention mass, initial tokens can act as attention sinks, recent tokens are often important, and key/value activations have compressible structure. However, compression is not merely an efficiency problem. A cache decision changes the information available to future attention layers. If the model is already uncertain, or if a query depends on evidence that is easy to evict, the same compression ratio may carry much higher reliability risk than it does for an easy continuation.
+
+This project studies a simple question:
+
+\begin{quote}
+Can calibrated uncertainty estimates guide KV cache compression so that LLM inference becomes more efficient while preserving reliability under explicit risk controls?
+\end{quote}
+
+We propose \emph{Uncertainty-Calibrated KV Cache Compression} (\uckv{}). The central idea is to treat cache compression as a selective prediction problem over memory actions. At inference time, \uckv{} estimates a calibrated probability that an aggressive cache decision will harm the next generation step or the final task outcome. It then chooses a cache budget and token retention policy conditioned on this risk. High-risk steps receive larger budgets or fall back to conservative compression. Low-risk steps are compressed more aggressively.
+
+This draft makes five initial contributions.
+
+\begin{enumerate}[leftmargin=*]
+    \item It formulates uncertainty-calibrated KV cache compression as a risk-constrained inference problem.
+    \item It proposes a concrete \uckv{} method that combines calibrated uncertainty, adaptive budget allocation, sink/recent-token protection, and risk-weighted attention utility.
+    \item It gives theoretical analysis connecting omitted attention mass to attention-output perturbation and connecting calibrated compression-risk estimates to expected degradation control.
+    \item It implements a reproducible pilot pipeline for replay-based compression-risk estimation and free-running task evaluation.
+    \item It reports controlled retrieval-only pilot results on GPT-2 and SmolLM2-135M-Instruct, including a final SmolLM2 tolerance sweep and two confirmation seeds. We explicitly mark which replay metrics are simulated and which task metrics come from real generated continuations.
+\end{enumerate}
+
+The current manuscript is therefore a research blueprint plus a first pilot report. Claims about empirical superiority are intentionally withheld: the current experiments are small and synthetic. They identify a reproducible operating point on controlled retrieval prompts, but larger long-context benchmarks and systems measurements remain future work.

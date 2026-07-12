@@ -1,0 +1,13 @@
+\section{Discussion and Limitations}
+
+\uckv{} depends on the quality of uncertainty estimates. Token entropy can be miscalibrated, especially after instruction tuning, temperature changes, domain shift, or decoding with sampling. Semantic uncertainty may be more aligned with answer-level risk, but it requires multiple generations and can erase some of the efficiency gains. A practical system may therefore need a two-tier design: cheap token-level uncertainty for every step and expensive semantic uncertainty only for high-risk prompts or offline calibration.
+
+The pilot results highlight this limitation. SmolLM2-135M-Instruct required the tokenizer chat template before the full-cache baseline became meaningful. This is a reminder that compression experiments can be invalidated by prompt-format mismatch before cache policy is even considered. Future experiments should first verify that full-cache decoding solves the task at a reasonable rate, then compare compression policies.
+
+Another limitation is observability. A compressed-cache model cannot know the attention mass it would have assigned to evicted tokens. The initial implementation should estimate this from pre-compression observations, periodic full-cache probes on calibration data, or attention statistics before eviction. This is a source of approximation error and should be measured.
+
+The risk-control statement is only as strong as calibration under the deployment distribution. If prompts shift from short factual QA to long legal analysis, a previously calibrated risk model may become overconfident. Monitoring ECE and observed fallback rates over time is therefore part of the method, not an afterthought.
+
+The current selector also has a practical limitation: the best pilot point is conservative. In the final SmolLM2 confirmation seeds, \uckv{} at tolerance 0.36 matches full cache and sink+window 384 on answer containment while reducing retained tokens by 6--7\%. This is useful as a risk-controlled baseline, but it is not yet a strong systems result. The selector still falls back frequently on longer contexts, and we have not measured wall-clock throughput or peak memory in a production-style serving stack. The next selector should explicitly trade off predicted risk and memory, rather than choosing the smallest candidate below a hard threshold.
+
+Finally, \uckv{} should be evaluated against strong engineering baselines. A method that improves accuracy but adds enough overhead to reduce throughput may not be useful. The intended contribution is a better reliability-efficiency frontier, not compression at any cost.

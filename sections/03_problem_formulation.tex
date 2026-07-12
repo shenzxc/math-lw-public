@@ -1,0 +1,35 @@
+\section{Problem Formulation}
+
+Consider a decoder-only Transformer with $L$ layers and $H$ attention heads per layer. For a sequence prefix $x_{1:t}$, each layer-head pair stores cached keys and values
+\[
+K_{1:t}^{\ell,h} = \{k_i^{\ell,h}\}_{i=1}^{t}, \qquad
+V_{1:t}^{\ell,h} = \{v_i^{\ell,h}\}_{i=1}^{t}.
+\]
+At a decoding step $t+1$, a query $q_{t+1}^{\ell,h}$ attends over the cache with
+\[
+a_{t+1,i}^{\ell,h}
+= \frac{\exp((q_{t+1}^{\ell,h})^\top k_i^{\ell,h}/\sqrt{d})}
+{\sum_{j=1}^{t} \exp((q_{t+1}^{\ell,h})^\top k_j^{\ell,h}/\sqrt{d})},
+\qquad
+o_{t+1}^{\ell,h}
+= \sum_{i=1}^{t} a_{t+1,i}^{\ell,h} v_i^{\ell,h}.
+\]
+A cache compression policy selects a retained index set $\calS_{t}^{\ell,h}\subseteq \{1,\ldots,t\}$, or a quantized representation of retained entries, subject to a memory budget $B_t^{\ell,h}$. In this first draft we focus on eviction-based compression; quantization is left as a planned extension.
+
+Let $M(\pi)$ be the memory cost of a compression policy $\pi$, and let $D(y_{\mathrm{full}},y_{\pi})$ measure task or token-level degradation relative to full-cache decoding. Examples include answer mismatch, exact-match loss, negative log-likelihood increase, KL divergence between next-token distributions, or a human/LLM-judge factuality error indicator. Given a target degradation tolerance $\epsilon$ and an average memory budget $\bar{B}$, the ideal objective is
+\[
+\min_{\pi} \E[M(\pi)]
+\quad \text{subject to} \quad
+\Prob(D(y_{\mathrm{full}},y_{\pi}) > \delta) \le \epsilon,
+\]
+where $\delta$ defines an unacceptable compression-induced change.
+
+This objective is difficult because full-cache outputs are not available at deployment, and task-level degradation may only be observed after generation. \uckv{} therefore learns a calibrated proxy:
+\[
+g_{\phi}(s_t,b) \approx \Prob(D_b > \delta \mid s_t),
+\]
+where $s_t$ includes uncertainty features, attention statistics, context length, layer/head summaries, and candidate budget $b$. At inference time, the policy chooses the smallest budget whose predicted risk is below a user-specified tolerance:
+\[
+b_t^\star = \min \{b \in \calB : g_{\phi}(s_t,b) \le \epsilon\}.
+\]
+If no candidate budget satisfies the tolerance, \uckv{} falls back to a conservative budget or full-cache decoding for that step.

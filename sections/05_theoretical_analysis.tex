@@ -1,0 +1,58 @@
+\section{Theoretical Analysis}
+
+This section gives preliminary analysis. The goal is not to prove that uncertainty always identifies important cache entries, but to clarify what cache compression must control.
+
+\begin{proposition}[Single-head attention perturbation]
+Fix a layer-head pair and a decoding step. Suppose $\|v_i\|_2 \le V$ for all cached values. Let $a_i$ be the full-cache attention distribution and let $\calS$ be the retained set with retained attention mass $\alpha = \sum_{i\in\calS} a_i$. Let
+\[
+o = \sum_i a_i v_i,
+\qquad
+o_{\calS} = \sum_{i\in\calS} \frac{a_i}{\alpha} v_i,
+\]
+where $o_{\calS}$ is the attention output after renormalizing over retained tokens. If $\alpha>0$, then
+\[
+\|o-o_{\calS}\|_2 \le 2V(1-\alpha).
+\]
+\end{proposition}
+
+\begin{proof}
+We can write
+\[
+o-o_{\calS}
+= \sum_{i\in\calS} a_i\left(1-\frac{1}{\alpha}\right)v_i
++ \sum_{i\notin\calS} a_i v_i .
+\]
+Taking norms and using $\|v_i\|_2\le V$ gives
+\[
+\|o-o_{\calS}\|_2
+\le V\sum_{i\in\calS} a_i\left(\frac{1}{\alpha}-1\right)
++ V\sum_{i\notin\calS} a_i
+= V(1-\alpha)+V(1-\alpha).
+\]
+\end{proof}
+
+This bound supports attention-mass retention as a reasonable primitive: if a compression policy keeps the tokens carrying most of the full attention mass, the one-step attention output is stable. However, the bound is local. Errors can accumulate across heads, layers, and generation steps.
+
+\begin{proposition}[Layer-wise accumulation sketch]
+Assume each residual block after attention is $L_{\ell}$-Lipschitz with respect to its attention output, and assume the value norms in layer $\ell$ are bounded by $V_{\ell}$. If head $h$ in layer $\ell$ discards attention mass at most $\varepsilon_{\ell,h,t}$ at step $t$, then the hidden-state perturbation after $L$ layers is bounded by a constant multiple of
+\[
+\sum_{\ell=1}^{L}
+\left(\prod_{j>\ell} L_j\right)
+\sum_{h=1}^{H} 2V_{\ell}\varepsilon_{\ell,h,t}.
+\]
+\end{proposition}
+
+The product term is loose but useful: cache errors in earlier layers may be amplified by later transformations. This motivates layer-wise and head-wise budget allocation rather than a uniform token budget.
+
+\begin{proposition}[Risk selection under calibrated compression estimates]
+Let $Z_b=\mathbf{1}\{D_b>\delta\}$ be the event that budget $b$ causes unacceptable degradation. Suppose $g_{\phi}(s,b)$ is calibrated up to error $\Delta$ on the deployment distribution in the sense that
+\[
+\left|\Prob(Z_b=1 \mid g_{\phi}(s,b)=q)-q\right| \le \Delta
+\]
+for all relevant $q$ and $b$. If the policy chooses any budget $b$ satisfying $g_{\phi}(s,b)\le \epsilon$, then
+\[
+\Prob(Z_b=1) \le \epsilon+\Delta.
+\]
+\end{proposition}
+
+This proposition is an assumption-to-guarantee statement: the practical burden is to validate calibration and monitor distribution shift. It also suggests an abstention rule. If no budget has predicted risk below $\epsilon$, the system should use a conservative cache rather than silently compressing.
